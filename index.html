@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="es-AR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#111827">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fichar">
+<title>Fichar</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --linea:#334155;
+    --txt:#f1f5f9; --txt2:#94a3b8;
+    --ok:#22c55e; --warn:#f59e0b; --err:#ef4444; --info:#3b82f6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg); color:var(--txt);
+    min-height:100vh; min-height:100dvh;
+    display:flex; align-items:center; justify-content:center;
+    padding:20px;
+  }
+  .app{width:100%; max-width:420px}
+  .pantalla{display:none}
+  .pantalla.activa{display:block; animation:entrar .25s ease}
+  @keyframes entrar{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  .sucursal{
+    text-align:center; font-size:13px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--txt2); margin-bottom:28px;
+  }
+  .saludo{font-size:26px; font-weight:600; text-align:center; margin-bottom:8px}
+
+  .estado{
+    background:var(--card); border:1px solid var(--linea); border-radius:16px;
+    padding:22px; text-align:center; margin-bottom:24px;
+  }
+  .estado .label{font-size:12px; color:var(--txt2); text-transform:uppercase; letter-spacing:.06em}
+  .estado .valor{font-size:30px; font-weight:700; margin:6px 0 2px}
+  .estado .desde{font-size:14px; color:var(--txt2)}
+  .adentro{color:var(--ok)} .afuera{color:var(--txt2)}
+
+  .aviso{
+    font-size:15px; text-align:center; color:var(--txt2); margin-bottom:18px;
+  }
+  .aviso b{color:var(--txt); font-weight:600}
+
+  button{
+    width:100%; border:0; border-radius:14px; padding:20px;
+    font-size:19px; font-weight:600; font-family:inherit;
+    cursor:pointer; transition:transform .1s, opacity .2s;
+  }
+  button:active{transform:scale(.98)}
+  button:disabled{opacity:.5; cursor:default}
+  .primario{background:var(--info); color:#fff}
+  .primario.salida{background:var(--warn); color:#1f1300}
+  .secundario{background:transparent; color:var(--txt2); font-size:15px; padding:14px; margin-top:12px}
+
+  .lista button{
+    background:var(--card); border:1px solid var(--linea); color:var(--txt);
+    text-align:left; padding:18px; margin-bottom:10px; font-size:17px;
+  }
+
+  .resultado{text-align:center; padding:12px 0}
+  .icono{font-size:64px; margin-bottom:14px; line-height:1}
+  .resultado h2{font-size:26px; margin-bottom:6px}
+  .hora{font-size:44px; font-weight:700; letter-spacing:-.02em; margin:10px 0}
+  .detalle{font-size:15px; color:var(--txt2); line-height:1.5}
+
+  .chip{
+    display:inline-block; font-size:12px; padding:5px 11px; border-radius:99px;
+    margin-top:14px; font-weight:500;
+  }
+  .chip.ok{background:rgba(34,197,94,.15); color:var(--ok)}
+  .chip.no{background:rgba(245,158,11,.15); color:var(--warn)}
+  .chip.sin{background:rgba(148,163,184,.15); color:var(--txt2)}
+
+  .spinner{
+    width:38px; height:38px; margin:0 auto 18px;
+    border:3px solid var(--linea); border-top-color:var(--info);
+    border-radius:50%; animation:girar .8s linear infinite;
+  }
+  @keyframes girar{to{transform:rotate(360deg)}}
+  .cargando{text-align:center; color:var(--txt2); padding:40px 0}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Carga inicial -->
+  <div id="p-carga" class="pantalla activa">
+    <div class="cargando">
+      <div class="spinner"></div>
+      <div id="carga-txt">Conectando…</div>
+    </div>
+  </div>
+
+  <!-- Alta: elegir empleado (solo la primera vez) -->
+  <div id="p-alta" class="pantalla">
+    <div class="sucursal" id="alta-suc"></div>
+    <div class="saludo" style="margin-bottom:22px">¿Quién sos?</div>
+    <div class="lista" id="alta-lista"></div>
+  </div>
+
+  <!-- Pantalla principal -->
+  <div id="p-main" class="pantalla">
+    <div class="sucursal" id="main-suc"></div>
+    <div class="saludo" id="main-nombre"></div>
+    <div class="estado">
+      <div class="label">Estado actual</div>
+      <div class="valor" id="main-estado">—</div>
+      <div class="desde" id="main-desde"></div>
+    </div>
+    <div class="aviso">Vas a registrar tu <b id="main-proximo">—</b></div>
+    <button class="primario" id="btn-fichar">Confirmar</button>
+    <button class="secundario" id="btn-cambiar">No sos vos? Cambiar persona</button>
+  </div>
+
+  <!-- Enviando -->
+  <div id="p-envio" class="pantalla">
+    <div class="cargando">
+      <div class="spinner"></div>
+      <div id="envio-txt">Ubicando…</div>
+    </div>
+  </div>
+
+  <!-- Resultado -->
+  <div id="p-fin" class="pantalla">
+    <div class="resultado">
+      <div class="icono" id="fin-icono"></div>
+      <h2 id="fin-titulo"></h2>
+      <div class="hora" id="fin-hora"></div>
+      <div class="detalle" id="fin-detalle"></div>
+      <div id="fin-chip"></div>
+    </div>
+    <button class="secundario" id="btn-volver" style="margin-top:26px">Volver</button>
+  </div>
+
+</div>
+
+<script>
+/* =====================================================================
+ * FICHAR — Frontend
+ *
+ * ⚠️ ÚNICO VALOR A COMPLETAR: pegá abajo la URL de la aplicación web
+ * de Apps Script (la que termina en /exec).
+ * ===================================================================== */
+const API = 'https://script.google.com/macros/s/AKfycbyEGzy51PBl4nom-2yMLc-w7Hl8sH4V4wxWS0XnOWtH8wtQohK9yRYKNO2U7JWR0kM-/exec';
+
+/* La sucursal viene en el QR: .../index.html?s=S01
+   Así el empleado nunca elige sucursal y no se puede equivocar de local. */
+const SUCURSAL = new URLSearchParams(location.search).get('s') || '';
+
+const CLAVE_EMPLEADO = 'fichar_empleado_' + SUCURSAL;
+
+let config = null;
+let empleadoId = localStorage.getItem(CLAVE_EMPLEADO) || null;
+let proximoTipo = 'ENTRADA';
+
+const $ = function (id) { return document.getElementById(id); };
+
+function mostrar(pantalla) {
+  document.querySelectorAll('.pantalla').forEach(function (p) {
+    p.classList.remove('activa');
+  });
+  $(pantalla).classList.add('activa');
+}
+
+function datosSucursal() {
+  if (!config) return null;
+  return config.sucursales.filter(function (s) {
+    return String(s.sucursal) === String(SUCURSAL);
+  })[0] || null;
+}
+
+function datosEmpleado(id) {
+  if (!config) return null;
+  return config.empleados.filter(function (e) {
+    return String(e.empleado) === String(id);
+  })[0] || null;
+}
+
+
+/* ---------------------------------------------------------------------
+ * Arranque
+ * ------------------------------------------------------------------- */
+async function iniciar() {
+  if (!SUCURSAL) {
+    return fallar('Falta la sucursal', 'Este link no tiene sucursal. Escaneá el QR del local.');
+  }
+  if (API.indexOf('PEGAR_ACA') === 0) {
+    return fallar('Sin configurar', 'Falta pegar la URL de la aplicación web en el código.');
+  }
+
+  try {
+    const r = await fetch(API + '?action=config');
+    config = await r.json();
+  } catch (err) {
+    return fallar('Sin conexión', 'No se pudo contactar al servidor. Revisá los datos o el wifi.');
+  }
+
+  if (!config.ok || !datosSucursal()) {
+    return fallar('Sucursal desconocida', 'El código "' + SUCURSAL + '" no figura en el sistema.');
+  }
+
+  const nombreSuc = datosSucursal().nombre;
+  $('alta-suc').textContent = nombreSuc;
+  $('main-suc').textContent = nombreSuc;
+
+  // Si el empleado guardado ya no está activo, se pide de nuevo.
+  if (empleadoId && !datosEmpleado(empleadoId)) {
+    localStorage.removeItem(CLAVE_EMPLEADO);
+    empleadoId = null;
+  }
+
+  if (!empleadoId) return pantallaAlta();
+  return pantallaPrincipal();
+}
+
+function pantallaAlta() {
+  const lista = $('alta-lista');
+  lista.innerHTML = '';
+
+  config.empleados
+    .filter(function (e) { return String(e.sucursal) === String(SUCURSAL); })
+    .forEach(function (e) {
+      const b = document.createElement('button');
+      b.textContent = e.nombre;
+      b.onclick = function () {
+        empleadoId = e.empleado;
+        localStorage.setItem(CLAVE_EMPLEADO, empleadoId);
+        pantallaPrincipal();
+      };
+      lista.appendChild(b);
+    });
+
+  mostrar('p-alta');
+}
+
+/* Consulta el estado ANTES de fichar y lo muestra.
+   Esta pantalla es la capa que más errores evita: el que escanea de
+   más ve lo que va a registrar antes de confirmarlo. */
+async function pantallaPrincipal() {
+  $('carga-txt').textContent = 'Consultando estado…';
+  mostrar('p-carga');
+
+  const emp = datosEmpleado(empleadoId);
+  $('main-nombre').textContent = 'Hola, ' + emp.nombre;
+
+  let est;
+  try {
+    const url = API + '?action=estado&sucursal=' + encodeURIComponent(SUCURSAL) +
+                '&empleado=' + encodeURIComponent(empleadoId);
+    est = await (await fetch(url)).json();
+  } catch (err) {
+    return fallar('Sin conexión', 'No se pudo consultar tu estado. Probá de nuevo.');
+  }
+
+  if (!est.ok) return fallar('Error', est.error || 'Respuesta inesperada del servidor.');
+
+  const adentro = est.estado === 'ADENTRO';
+  proximoTipo = est.proximo;
+
+  $('main-estado').textContent = adentro ? 'ADENTRO' : 'AFUERA';
+  $('main-estado').className = 'valor ' + (adentro ? 'adentro' : 'afuera');
+  $('main-desde').textContent = adentro && est.desde ? 'Desde las ' + est.desde.substring(0, 5) : '';
+  $('main-proximo').textContent = proximoTipo;
+
+  const btn = $('btn-fichar');
+  btn.textContent = 'Registrar ' + proximoTipo.toLowerCase();
+  btn.className = 'primario' + (proximoTipo === 'SALIDA' ? ' salida' : '');
+  btn.disabled = false;
+
+  mostrar('p-main');
+}
+
+
+/* ---------------------------------------------------------------------
+ * Fichada
+ * ------------------------------------------------------------------- */
+function ubicacion() {
+  return new Promise(function (resolve) {
+    if (!navigator.geolocation) return resolve({});
+    navigator.geolocation.getCurrentPosition(
+      function (pos) {
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          precision: Math.round(pos.coords.accuracy)
+        });
+      },
+      // Si el empleado niega el permiso o el GPS falla, la fichada se
+      // manda igual y queda marcada como SIN_GPS. Nunca se le bloquea
+      // el fichaje a alguien por un permiso del navegador.
+      function () { resolve({}); },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+    );
+  });
+}
+
+async function fichar() {
+  $('btn-fichar').disabled = true;
+  $('envio-txt').textContent = 'Ubicando…';
+  mostrar('p-envio');
+
+  const geo = await ubicacion();
+  $('envio-txt').textContent = 'Registrando…';
+
+  const cuerpo = {
+    sucursal: SUCURSAL,
+    empleado: empleadoId,
+    lat: geo.lat,
+    lng: geo.lng,
+    precision: geo.precision,
+    dispositivo: navigator.userAgent
+  };
+
+  let res;
+  try {
+    // Sin headers a propósito: un body de tipo string hace que el
+    // navegador mande text/plain, lo que evita el preflight CORS.
+    // Apps Script no responde preflight, así que agregar
+    // 'Content-Type: application/json' rompe el pedido.
+    res = await (await fetch(API, { method: 'POST', body: JSON.stringify(cuerpo) })).json();
+  } catch (err) {
+    return fallar('No se pudo registrar', 'Revisá la conexión y probá de nuevo. No quedó registrado.');
+  }
+
+  if (!res.ok) return fallar('No se pudo registrar', res.error || 'Error del servidor.');
+
+  mostrarResultado(res);
+}
+
+function mostrarResultado(res) {
+  const dup = res.tipo === 'DUPLICADO';
+  const entrada = res.tipo === 'ENTRADA';
+
+  $('fin-icono').textContent = dup ? '🤚' : (entrada ? '✅' : '👋');
+  $('fin-titulo').textContent = dup ? 'Ya estabas fichado'
+                                    : (entrada ? 'Entrada registrada' : 'Salida registrada');
+  $('fin-hora').textContent = res.hora ? res.hora.substring(0, 5) : '';
+  $('fin-detalle').textContent = dup
+    ? 'Tu fichada anterior sigue siendo la válida.'
+    : res.empleado + ' · ' + res.sucursal;
+
+  let chip = '';
+  if (res.geo_ok === 'SI') {
+    chip = '<span class="chip ok">📍 Ubicación verificada</span>';
+  } else if (res.geo_ok === 'NO') {
+    chip = '<span class="chip no">📍 Lejos del local (' + res.distancia_m + ' m)</span>';
+  } else {
+    chip = '<span class="chip sin">📍 Sin ubicación</span>';
+  }
+  $('fin-chip').innerHTML = chip;
+
+  mostrar('p-fin');
+}
+
+function fallar(titulo, detalle) {
+  $('fin-icono').textContent = '⚠️';
+  $('fin-titulo').textContent = titulo;
+  $('fin-hora').textContent = '';
+  $('fin-detalle').textContent = detalle;
+  $('fin-chip').innerHTML = '';
+  mostrar('p-fin');
+}
+
+
+/* ---------------------------------------------------------------------
+ * Eventos
+ * ------------------------------------------------------------------- */
+$('btn-fichar').onclick = fichar;
+
+$('btn-volver').onclick = function () {
+  if (empleadoId && config) pantallaPrincipal();
+  else location.reload();
+};
+
+$('btn-cambiar').onclick = function () {
+  localStorage.removeItem(CLAVE_EMPLEADO);
+  empleadoId = null;
+  pantallaAlta();
+};
+
+iniciar();
+</script>
+</body>
+</html>
