@@ -8,6 +8,12 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Fichar">
 <title>Fichar</title>
+
+<!-- Abre el TLS con Apps Script mientras se parsea el HTML.
+     Ahorra el handshake completo del primer pedido. -->
+<link rel="preconnect" href="https://script.google.com" crossorigin>
+<link rel="dns-prefetch" href="https://script.google.com">
+
 <style>
   :root{
     --bg:#0f172a; --card:#1e293b; --linea:#334155;
@@ -39,21 +45,33 @@
   }
   .estado .label{font-size:12px; color:var(--txt2); text-transform:uppercase; letter-spacing:.06em}
   .estado .valor{font-size:30px; font-weight:700; margin:6px 0 2px}
-  .estado .desde{font-size:14px; color:var(--txt2)}
+  .estado .desde{font-size:14px; color:var(--txt2); min-height:20px}
   .adentro{color:var(--ok)} .afuera{color:var(--txt2)}
+
+  /* Placeholder mientras llega el estado real desde el servidor.
+     Reemplaza al spinner a pantalla completa: la pantalla aparece
+     entera y solo late el dato que todavía no se sabe. */
+  .skel{
+    display:inline-block; height:30px; width:150px; border-radius:8px;
+    background:linear-gradient(90deg,#334155 25%,#475569 50%,#334155 75%);
+    background-size:200% 100%; animation:latir 1.2s ease-in-out infinite;
+    vertical-align:middle; margin:6px 0 2px;
+  }
+  @keyframes latir{0%{background-position:200% 0}100%{background-position:-200% 0}}
 
   .aviso{
     font-size:15px; text-align:center; color:var(--txt2); margin-bottom:18px;
+    min-height:22px;
   }
   .aviso b{color:var(--txt); font-weight:600}
 
   button{
     width:100%; border:0; border-radius:14px; padding:20px;
     font-size:19px; font-weight:600; font-family:inherit;
-    cursor:pointer; transition:transform .1s, opacity .2s;
+    cursor:pointer; transition:transform .1s, opacity .2s, background .2s;
   }
   button:active{transform:scale(.98)}
-  button:disabled{opacity:.5; cursor:default}
+  button:disabled{opacity:.45; cursor:default}
   .primario{background:var(--info); color:#fff}
   .primario.salida{background:var(--warn); color:#1f1300}
   .secundario{background:transparent; color:var(--txt2); font-size:15px; padding:14px; margin-top:12px}
@@ -89,7 +107,7 @@
 <body>
 <div class="app">
 
-  <!-- Carga inicial -->
+  <!-- Carga inicial: solo se ve la primera vez, sin datos en el celular -->
   <div id="p-carga" class="pantalla activa">
     <div class="cargando">
       <div class="spinner"></div>
@@ -110,11 +128,11 @@
     <div class="saludo" id="main-nombre"></div>
     <div class="estado">
       <div class="label">Estado actual</div>
-      <div class="valor" id="main-estado">—</div>
+      <div class="valor" id="main-estado"><span class="skel"></span></div>
       <div class="desde" id="main-desde"></div>
     </div>
-    <div class="aviso">Vas a registrar tu <b id="main-proximo">—</b></div>
-    <button class="primario" id="btn-fichar">Confirmar</button>
+    <div class="aviso" id="main-aviso"></div>
+    <button class="primario" id="btn-fichar" disabled>Consultando…</button>
     <button class="secundario" id="btn-cambiar">No sos vos? Cambiar persona</button>
   </div>
 
@@ -122,7 +140,7 @@
   <div id="p-envio" class="pantalla">
     <div class="cargando">
       <div class="spinner"></div>
-      <div id="envio-txt">Ubicando…</div>
+      <div id="envio-txt">Registrando…</div>
     </div>
   </div>
 
@@ -146,6 +164,17 @@
  *
  * ⚠️ ÚNICO VALOR A COMPLETAR: pegá abajo la URL de la aplicación web
  * de Apps Script (la que termina en /exec).
+ *
+ * ESTRATEGIA DE VELOCIDAD
+ * Lo que se percibe como lentitud son tres esperas en serie. Acá las
+ * tres se atacan distinto:
+ *
+ *  1. El GPS tarda entre 3 y 8 segundos y antes arrancaba recién al
+ *     tocar el botón. Ahora se pide AL CARGAR, en paralelo con todo lo
+ *     demás, así para cuando el empleado toca ya está resuelto.
+ *  2. Había dos viajes al servidor (config y estado). Ahora es uno solo.
+ *  3. La pantalla esperaba a tener todos los datos. Ahora se dibuja al
+ *     instante con lo guardado en el celular y solo late el estado.
  * ===================================================================== */
 const API = 'https://script.google.com/macros/s/AKfycbyEGzy51PBl4nom-2yMLc-w7Hl8sH4V4wxWS0XnOWtH8wtQohK9yRYKNO2U7JWR0kM-/exec';
 
@@ -154,9 +183,15 @@ const API = 'https://script.google.com/macros/s/AKfycbyEGzy51PBl4nom-2yMLc-w7Hl8
 const SUCURSAL = new URLSearchParams(location.search).get('s') || '';
 
 const CLAVE_EMPLEADO = 'fichar_empleado_' + SUCURSAL;
+const CLAVE_CONFIG   = 'fichar_config_' + SUCURSAL;
+
+/* Una posición más vieja que esto se vuelve a pedir. 90 segundos es
+   holgado para un geofence de 150 m: nadie recorre esa distancia
+   mientras mira la pantalla de confirmación. */
+const GEO_VIGENCIA_MS = 90000;
 
 let config = null;
-let empleadoId = localStorage.getItem(CLAVE_EMPLEADO) || null;
+let empleadoId = null;
 let proximoTipo = 'ENTRADA';
 
 const $ = function (id) { return document.getElementById(id); };
@@ -168,120 +203,28 @@ function mostrar(pantalla) {
   $(pantalla).classList.add('activa');
 }
 
-function datosSucursal() {
-  if (!config) return null;
-  return config.sucursales.filter(function (s) {
-    return String(s.sucursal) === String(SUCURSAL);
-  })[0] || null;
+function leerLocal(clave) {
+  try { return JSON.parse(localStorage.getItem(clave)); } catch (e) { return null; }
 }
 
-function datosEmpleado(id) {
-  if (!config) return null;
-  return config.empleados.filter(function (e) {
-    return String(e.empleado) === String(id);
-  })[0] || null;
+function guardarLocal(clave, valor) {
+  try { localStorage.setItem(clave, JSON.stringify(valor)); } catch (e) {}
 }
 
 
 /* ---------------------------------------------------------------------
- * Arranque
+ * UBICACIÓN
+ *
+ * Se pide apenas se sabe quién está fichando, no cuando toca el botón.
+ * Ese adelanto es la mayor parte de la mejora de velocidad.
  * ------------------------------------------------------------------- */
-async function iniciar() {
-  if (!SUCURSAL) {
-    return fallar('Falta la sucursal', 'Este link no tiene sucursal. Escaneá el QR del local.');
-  }
-  if (API.indexOf('PEGAR_ACA') === 0) {
-    return fallar('Sin configurar', 'Falta pegar la URL de la aplicación web en el código.');
-  }
+let geoGuardada = null;   // { datos, ts }
+let geoEnCurso = null;    // Promise en vuelo, para no pedir dos veces
 
-  try {
-    const r = await fetch(API + '?action=config');
-    config = await r.json();
-  } catch (err) {
-    return fallar('Sin conexión', 'No se pudo contactar al servidor. Revisá los datos o el wifi.');
-  }
+function pedirUbicacion() {
+  if (geoEnCurso) return geoEnCurso;
 
-  if (!config.ok || !datosSucursal()) {
-    return fallar('Sucursal desconocida', 'El código "' + SUCURSAL + '" no figura en el sistema.');
-  }
-
-  const nombreSuc = datosSucursal().nombre;
-  $('alta-suc').textContent = nombreSuc;
-  $('main-suc').textContent = nombreSuc;
-
-  // Si el empleado guardado ya no está activo, se pide de nuevo.
-  if (empleadoId && !datosEmpleado(empleadoId)) {
-    localStorage.removeItem(CLAVE_EMPLEADO);
-    empleadoId = null;
-  }
-
-  if (!empleadoId) return pantallaAlta();
-  return pantallaPrincipal();
-}
-
-function pantallaAlta() {
-  const lista = $('alta-lista');
-  lista.innerHTML = '';
-
-  config.empleados
-    .filter(function (e) { return String(e.sucursal) === String(SUCURSAL); })
-    .forEach(function (e) {
-      const b = document.createElement('button');
-      b.textContent = e.nombre;
-      b.onclick = function () {
-        empleadoId = e.empleado;
-        localStorage.setItem(CLAVE_EMPLEADO, empleadoId);
-        pantallaPrincipal();
-      };
-      lista.appendChild(b);
-    });
-
-  mostrar('p-alta');
-}
-
-/* Consulta el estado ANTES de fichar y lo muestra.
-   Esta pantalla es la capa que más errores evita: el que escanea de
-   más ve lo que va a registrar antes de confirmarlo. */
-async function pantallaPrincipal() {
-  $('carga-txt').textContent = 'Consultando estado…';
-  mostrar('p-carga');
-
-  const emp = datosEmpleado(empleadoId);
-  $('main-nombre').textContent = 'Hola, ' + emp.nombre;
-
-  let est;
-  try {
-    const url = API + '?action=estado&sucursal=' + encodeURIComponent(SUCURSAL) +
-                '&empleado=' + encodeURIComponent(empleadoId);
-    est = await (await fetch(url)).json();
-  } catch (err) {
-    return fallar('Sin conexión', 'No se pudo consultar tu estado. Probá de nuevo.');
-  }
-
-  if (!est.ok) return fallar('Error', est.error || 'Respuesta inesperada del servidor.');
-
-  const adentro = est.estado === 'ADENTRO';
-  proximoTipo = est.proximo;
-
-  $('main-estado').textContent = adentro ? 'ADENTRO' : 'AFUERA';
-  $('main-estado').className = 'valor ' + (adentro ? 'adentro' : 'afuera');
-  $('main-desde').textContent = adentro && est.desde ? 'Desde las ' + est.desde.substring(0, 5) : '';
-  $('main-proximo').textContent = proximoTipo;
-
-  const btn = $('btn-fichar');
-  btn.textContent = 'Registrar ' + proximoTipo.toLowerCase();
-  btn.className = 'primario' + (proximoTipo === 'SALIDA' ? ' salida' : '');
-  btn.disabled = false;
-
-  mostrar('p-main');
-}
-
-
-/* ---------------------------------------------------------------------
- * Fichada
- * ------------------------------------------------------------------- */
-function ubicacion() {
-  return new Promise(function (resolve) {
+  geoEnCurso = new Promise(function (resolve) {
     if (!navigator.geolocation) return resolve({});
     navigator.geolocation.getCurrentPosition(
       function (pos) {
@@ -297,12 +240,209 @@ function ubicacion() {
       function () { resolve({}); },
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
     );
+  }).then(function (d) {
+    geoGuardada = { datos: d, ts: Date.now() };
+    geoEnCurso = null;
+    return d;
+  });
+
+  return geoEnCurso;
+}
+
+function ubicacion() {
+  const fresca = geoGuardada &&
+                 geoGuardada.datos.lat != null &&
+                 (Date.now() - geoGuardada.ts) < GEO_VIGENCIA_MS;
+  if (fresca) return Promise.resolve(geoGuardada.datos);
+  return pedirUbicacion();
+}
+
+
+/* ---------------------------------------------------------------------
+ * SERVIDOR
+ * ------------------------------------------------------------------- */
+
+/* Un solo pedido trae sucursal, empleados y (si ya sabemos quién es)
+   el estado del día. Antes esto eran dos viajes encadenados. */
+function pedirInicio(empleado) {
+  let url = API + '?action=inicio&s=' + encodeURIComponent(SUCURSAL);
+  if (empleado) url += '&e=' + encodeURIComponent(empleado);
+  return fetch(url).then(function (r) { return r.json(); });
+}
+
+function empleadoPorId(id) {
+  if (!config || !config.empleados) return null;
+  return config.empleados.filter(function (e) {
+    return String(e.empleado) === String(id);
+  })[0] || null;
+}
+
+
+/* ---------------------------------------------------------------------
+ * ARRANQUE
+ * ------------------------------------------------------------------- */
+async function iniciar() {
+  if (!SUCURSAL) {
+    return fallar('Falta la sucursal', 'Este link no tiene sucursal. Escaneá el QR del local.');
+  }
+  if (API.indexOf('PEGAR_ACA') === 0) {
+    return fallar('Sin configurar', 'Falta pegar la URL de la aplicación web en el código.');
+  }
+
+  empleadoId = localStorage.getItem(CLAVE_EMPLEADO) || null;
+  config = leerLocal(CLAVE_CONFIG);
+
+  // Pintado optimista: si el celular ya conoce la sucursal y a la
+  // persona, la pantalla aparece completa antes de hablar con nadie.
+  if (config && empleadoId && empleadoPorId(empleadoId)) {
+    pintarShell();
+    mostrar('p-main');
+    pedirUbicacion();          // arranca el GPS ya, sin esperar nada
+  } else if (config) {
+    pintarAlta();
+    mostrar('p-alta');
+  } else {
+    mostrar('p-carga');
+  }
+
+  // Y en paralelo, la verdad del servidor.
+  let d;
+  try {
+    d = await pedirInicio(empleadoId);
+  } catch (err) {
+    if (config && empleadoId) {
+      return errorEnMain('Sin conexión. Probá de nuevo.');
+    }
+    return fallar('Sin conexión', 'No se pudo contactar al servidor. Revisá los datos o el wifi.');
+  }
+
+  if (!d.ok) {
+    return fallar('Sucursal desconocida', d.error || 'El código "' + SUCURSAL + '" no figura en el sistema.');
+  }
+
+  config = { sucursal: d.sucursal, empleados: d.empleados };
+  guardarLocal(CLAVE_CONFIG, config);
+
+  // Si el empleado guardado ya no está en la lista (se dio de baja),
+  // se vuelve a preguntar.
+  if (empleadoId && !empleadoPorId(empleadoId)) {
+    localStorage.removeItem(CLAVE_EMPLEADO);
+    empleadoId = null;
+  }
+
+  if (!empleadoId) {
+    pintarAlta();
+    return mostrar('p-alta');
+  }
+
+  pintarShell();
+  aplicarEstado(d);
+  mostrar('p-main');
+}
+
+function pintarShell() {
+  const emp = empleadoPorId(empleadoId);
+  $('main-suc').textContent = config.sucursal.nombre;
+  $('main-nombre').textContent = emp ? 'Hola, ' + emp.nombre : '';
+}
+
+function pintarAlta() {
+  $('alta-suc').textContent = config.sucursal.nombre;
+
+  const lista = $('alta-lista');
+  lista.innerHTML = '';
+
+  config.empleados.forEach(function (e) {
+    const b = document.createElement('button');
+    b.textContent = e.nombre;
+    b.onclick = function () { elegir(e.empleado); };
+    lista.appendChild(b);
   });
 }
 
+async function elegir(id) {
+  empleadoId = id;
+  localStorage.setItem(CLAVE_EMPLEADO, id);
+
+  pedirUbicacion();   // acá sí: ya eligió, el permiso tiene contexto
+  pintarShell();
+  esperandoEstado();
+  mostrar('p-main');
+
+  try {
+    const d = await pedirInicio(id);
+    if (!d.ok) return errorEnMain(d.error || 'Error del servidor.');
+    aplicarEstado(d);
+  } catch (err) {
+    errorEnMain('Sin conexión. Probá de nuevo.');
+  }
+}
+
+function esperandoEstado() {
+  $('main-estado').innerHTML = '<span class="skel"></span>';
+  $('main-estado').className = 'valor';
+  $('main-desde').textContent = '';
+  $('main-aviso').textContent = '';
+  const btn = $('btn-fichar');
+  btn.textContent = 'Consultando…';
+  btn.className = 'primario';
+  btn.disabled = true;
+  btn.onclick = fichar;
+}
+
+/* El estado real recién llegado del servidor. El botón se habilita solo
+   acá: nunca se deja fichar sobre un dato viejo del celular. */
+function aplicarEstado(d) {
+  const adentro = d.estado === 'ADENTRO';
+  proximoTipo = d.proximo || 'ENTRADA';
+
+  $('main-estado').textContent = adentro ? 'ADENTRO' : 'AFUERA';
+  $('main-estado').className = 'valor ' + (adentro ? 'adentro' : 'afuera');
+  $('main-desde').textContent = adentro && d.desde ? 'Desde las ' + d.desde.substring(0, 5) : '';
+
+  $('main-aviso').innerHTML = 'Vas a registrar tu <b>' + proximoTipo + '</b>';
+
+  const btn = $('btn-fichar');
+  btn.textContent = 'Registrar ' + proximoTipo.toLowerCase();
+  btn.className = 'primario' + (proximoTipo === 'SALIDA' ? ' salida' : '');
+  btn.disabled = false;
+  btn.onclick = fichar;
+}
+
+function errorEnMain(msg) {
+  $('main-estado').textContent = '—';
+  $('main-estado').className = 'valor afuera';
+  $('main-desde').textContent = '';
+  $('main-aviso').textContent = msg;
+  const btn = $('btn-fichar');
+  btn.textContent = 'Reintentar';
+  btn.className = 'primario';
+  btn.disabled = false;
+  btn.onclick = reintentar;
+}
+
+async function reintentar() {
+  esperandoEstado();
+  try {
+    const d = await pedirInicio(empleadoId);
+    if (!d.ok) return errorEnMain(d.error || 'Error del servidor.');
+    aplicarEstado(d);
+  } catch (err) {
+    errorEnMain('Sigue sin conexión.');
+  }
+}
+
+
+/* ---------------------------------------------------------------------
+ * FICHADA
+ * ------------------------------------------------------------------- */
 async function fichar() {
   $('btn-fichar').disabled = true;
-  $('envio-txt').textContent = 'Ubicando…';
+
+  // En el caso normal esto ya está resuelto desde que cargó la pantalla
+  // y no espera nada. Solo si el GPS falló o venció se pide de nuevo.
+  const pendiente = !geoGuardada || geoGuardada.datos.lat == null;
+  $('envio-txt').textContent = pendiente ? 'Ubicando…' : 'Registrando…';
   mostrar('p-envio');
 
   const geo = await ubicacion();
@@ -369,19 +509,26 @@ function fallar(titulo, detalle) {
 
 
 /* ---------------------------------------------------------------------
- * Eventos
+ * EVENTOS
  * ------------------------------------------------------------------- */
 $('btn-fichar').onclick = fichar;
 
 $('btn-volver').onclick = function () {
-  if (empleadoId && config) pantallaPrincipal();
-  else location.reload();
+  if (empleadoId && config) {
+    pintarShell();
+    esperandoEstado();
+    mostrar('p-main');
+    reintentar();
+  } else {
+    location.reload();
+  }
 };
 
 $('btn-cambiar').onclick = function () {
   localStorage.removeItem(CLAVE_EMPLEADO);
   empleadoId = null;
-  pantallaAlta();
+  pintarAlta();
+  mostrar('p-alta');
 };
 
 iniciar();
